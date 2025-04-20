@@ -1,0 +1,15 @@
+{
+  "name": "gdrive",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build:background": "esbuild src/background/main.js --bundle --outfile=dist/background.js --format=esm --platform=browser --log-level=info"
+  },
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "devDependencies": {
+    "esbuild": "^0.25.2"
+  }
+}

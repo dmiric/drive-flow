@@ -1,0 +1,4 @@
+/* Add a basic rule to prevent Vite from optimizing this file away */
+body {
+  font-family: sans-serif;
+}

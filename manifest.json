@@ -1,0 +1,62 @@
+{
+  "manifest_version": 3,
+  "name": "Drive Flow",
+  "version": "1.0",
+  "description": "Display Google Drive folder contents as a React Flow overlay.",
+  "permissions": [
+    "identity",
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://www.googleapis.com/drive/v3/files*",
+    "https://drive.google.com/*",
+    "https://drive.mindmup.com/*",
+    "https://cdn.skypack.dev/*"
+  ],
+  "oauth2": {
+    "client_id": "74208567950-blur2nggd4sapmrf60l4na933dbbma60.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/drive.readonly"
+    ]
+  },
+  "action": {
+    "default_title": "Toggle Drive Flow UI"
+  },
+  "background": {
+    "service_worker": "dist/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://example.com/*",
+        "https://drive.google.com/*"
+      ],
+      "js": [
+        "src/content/main.js"
+      ],
+      "css": [
+        "src/ui/dist/assets/index.css",
+        "src/content/styles.css"
+      ]
+    }
+  ],
+  "icons": {
+    "48": "icons/icon-48.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "src/ui/dist/index.html",
+        "src/ui/dist/assets/*",
+        "src/content/styles.css",
+        "test.html"
+      ],
+      "matches": [
+        "*://example.com/*",
+        "https://drive.google.com/*"
+      ]
+    }
+  ]
+}
