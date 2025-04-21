@@ -136,184 +136,289 @@ async function saveDataFile(accessToken, parentFolderId, flowData) {
 }
 
 
-// Listen for messages from the content script
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  // Return true ONLY if sendResponse will be used asynchronously.
-  let isAsync = false; // Default to false
+// Listen for messages from UI scripts or content scripts
+// Make the listener async
+chrome.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
+  console.log("BG Listener: Received message:", JSON.stringify(message), "from:", sender?.tab?.id ?? sender?.id); // <-- Add log here
 
-  (async () => { // Use IIFE for async operations
-    try { // Add top-level try block
-      // REMOVED GET_FOLDER_DETAILS handler block
+  // Handle request from Sidebar to list files
+  if (message.action === 'listDriveFiles') {
+    const folderId = message.folderId || 'root'; // Default to root if not specified
+    console.log(`BG: Received listDriveFiles for folder: ${folderId}`); // <-- Modified log
+    // No need to explicitly return true here because the listener is async.
+    // We are now using chrome.tabs.sendMessage instead of sendResponse for this handler.
 
-      // Handle loading data for a specific folder
-      if (message.type === 'LOAD_FOLDER_DATA') {
-          // isAsync = true; // Removed: This handler uses chrome.tabs.sendMessage, not sendResponse
-          const folderId = message.payload?.folderId;
-        if (!folderId) {
-          console.error("Received LOAD_FOLDER_DATA without a folderId.");
-          // No sendResponse needed here as content script doesn't wait for this one
-          return;
-        }
+    // --- Restore Async Logic ---
+    try { // Add top-level try block for this specific handler
+      // console.log("BG: Attempting to get access token..."); // Log removed for brevity
+      console.log("BG: listDriveFiles - Before getAccessToken await"); // <-- Add log
+      const accessToken = await getAccessToken();
+      if (!accessToken) {
+        console.error("Cannot list files: Failed to retrieve access token.");
+        console.log("BG: Failed to get access token."); // <-- Add log
+        sendResponse({ error: 'Authentication failed.' });
+        return; // Exit async handler block
+      }
 
-        console.log(`Received request to load data for folder: ${folderId}`);
-        const accessToken = await getAccessToken();
+      console.log("BG: listDriveFiles - After getAccessToken await"); // <-- Add log
+      // Call the existing listFiles function
+      console.log(`BG: Got token, attempting listFiles for folder ${folderId}...`); // <-- Add log
+      console.log("BG: listDriveFiles - Before listFiles await"); // <-- Add log
+      const files = await listFiles(accessToken, folderId);
+      console.log("BG: listDriveFiles - After listFiles await"); // <-- Add log
+      console.log(`BG: listFiles returned. Found ${files?.length ?? 'undefined/null'} files/folders in ${folderId}.`); // <-- Add log
+      // Filter out the .dflow folder itself from the list sent to the UI
+      // Although maybe the sidebar *should* see it? Let's keep it for now.
+      // const filteredFiles = files.filter(file => !(file.name === DFLOW_FOLDER_NAME && file.mimeType === FOLDER_MIME_TYPE));
+      // console.log("BG: Sending successful file list response to UI."); // <-- Add log
+      // console.log("BG: listDriveFiles - Before sendResponse (success)"); // <-- Add log
+      // Clean the files array to prevent serialization issues
+      const cleanedFiles = files?.map(file => ({ // Add optional chaining for safety
+        id: file.id,
+        name: file.name,
+        mimeType: file.mimeType
+      })) || []; // Default to empty array if files is null/undefined
+      // console.log("BG: Sending cleaned file list response to UI."); // <-- Modified log
+      // console.log("BG: listDriveFiles - Before sendResponse (success)"); // <-- Add log
+      // Send response back to the specific content script tab using chrome.tabs.sendMessage
+      if (sender.tab?.id) {
+        console.log(`BG: Sending LIST_DRIVE_FILES_RESPONSE to tab ${sender.tab?.id}`);
+        chrome.tabs.sendMessage(sender.tab.id, {
+          type: 'LIST_DRIVE_FILES_RESPONSE',
+          payload: { files: cleanedFiles }
+        });
+      } else {
+        console.error("BG: Cannot send LIST_DRIVE_FILES_RESPONSE, sender tab ID is missing.");
+      }
+    } catch (error) {
+      console.error(`BG: Error caught during listFiles process for folder ${folderId}:`, error); // <-- Add log
+      console.error(`Error listing files for folder ${folderId}:`, error);
+      // Send error back to the specific content script tab using chrome.tabs.sendMessage
+      if (sender.tab?.id) {
+        chrome.tabs.sendMessage(sender.tab.id, {
+          type: 'LIST_DRIVE_FILES_RESPONSE', // Use same type for consistency
+          error: `API error listing files: ${error.message || error}`
+        });
+      }
+    } // --- End Async Logic ---
+    // Note: sendResponse is called within the try/catch, return true happened earlier
 
-        if (!accessToken) {
-          console.error("Cannot load data: Failed to retrieve access token.");
+  } // End if (message.action === 'listDriveFiles')
+
+  // REMOVED GET_FOLDER_DETAILS handler block (This comment might be outdated, check context)
+
+  // Handle loading data for a specific folder
+  if (message.type === 'LOAD_FOLDER_DATA') {
+      // isAsync = true; // Removed: This handler uses chrome.tabs.sendMessage, not sendResponse
+      const folderId = message.payload?.folderId;
+    if (!folderId) {
+      console.error("Received LOAD_FOLDER_DATA without a folderId.");
+      // No sendResponse needed here as content script doesn't wait for this one
+      return;
+    }
+
+    console.log(`Received request to load data for folder: ${folderId}`);
+    const accessToken = await getAccessToken();
+
+    if (!accessToken) {
+      console.error("Cannot load data: Failed to retrieve access token.");
+      if (sender.tab?.id) {
+        chrome.tabs.sendMessage(sender.tab.id, { type: 'DRIVE_FILES_ERROR', payload: 'Authentication failed.' });
+      }
+      return;
+    }
+
+    let savedFlowData = null;
+    let dataFileFound = false;
+
+    try {
+      // 0. Validate the folderId itself before proceeding
+      console.log(`Validating initial folder ID: ${folderId}`);
+      const folderDetails = await getFolderDetails(accessToken, folderId);
+      if (!folderDetails) {
+          console.error(`LOAD_FOLDER_DATA: Initial folder ID ${folderId} is invalid or inaccessible. Aborting load.`);
           if (sender.tab?.id) {
-            chrome.tabs.sendMessage(sender.tab.id, { type: 'DRIVE_FILES_ERROR', payload: 'Authentication failed.' });
+            // Optionally inform the content script
+            chrome.tabs.sendMessage(sender.tab.id, { type: 'DRIVE_FILES_ERROR', payload: 'Current Google Drive folder is inaccessible or invalid.' });
           }
-          return;
-        }
+          return; // Stop processing for this folder
+      }
+      // --- Step 0b: Check if the validated folder itself is '.dflow' ---
+      if (folderDetails.name === DFLOW_FOLDER_NAME) {
+          console.error(`LOAD_FOLDER_DATA: Attempted to load data inside a "${DFLOW_FOLDER_NAME}" folder (${folderId}). Aborting.`);
+          // Optionally send an error message back? For now, just aborting.
+          // if (sender.tab?.id) {
+          //   chrome.tabs.sendMessage(sender.tab.id, { type: 'DRIVE_FILES_ERROR', payload: 'Cannot initialize Drive Flow inside a .dflow folder.' });
+          // }
+          return; // Stop processing
+      }
+      console.log(`Initial folder ID ${folderId} is valid and not '.dflow' (${folderDetails.name}). Proceeding...`);
 
-        let savedFlowData = null;
-        let dataFileFound = false;
+      // 1. Look for .dflow folder
+      console.log(`Searching for folder "${DFLOW_FOLDER_NAME}" in parent ${folderId}`);
+      const dflowFolder = await findByName(accessToken, DFLOW_FOLDER_NAME, folderId, FOLDER_MIME_TYPE);
 
-        try {
-          // 0. Validate the folderId itself before proceeding
-          console.log(`Validating initial folder ID: ${folderId}`);
-          const folderDetails = await getFolderDetails(accessToken, folderId);
-          if (!folderDetails) {
-              console.error(`LOAD_FOLDER_DATA: Initial folder ID ${folderId} is invalid or inaccessible. Aborting load.`);
-              if (sender.tab?.id) {
-                // Optionally inform the content script
-                chrome.tabs.sendMessage(sender.tab.id, { type: 'DRIVE_FILES_ERROR', payload: 'Current Google Drive folder is inaccessible or invalid.' });
-              }
-              return; // Stop processing for this folder
-          }
-          // --- Step 0b: Check if the validated folder itself is '.dflow' ---
-          if (folderDetails.name === DFLOW_FOLDER_NAME) {
-              console.error(`LOAD_FOLDER_DATA: Attempted to load data inside a "${DFLOW_FOLDER_NAME}" folder (${folderId}). Aborting.`);
-              // Optionally send an error message back? For now, just aborting.
+      if (dflowFolder && dflowFolder.id) {
+         console.log(`Found existing "${DFLOW_FOLDER_NAME}" folder with ID: ${dflowFolder.id}`);
+        // 2. Look for data.json inside .dflow
+         console.log(`Searching for file "${DATA_FILE_NAME}" in parent ${dflowFolder.id}`);
+        const dataFile = await findByName(accessToken, DATA_FILE_NAME, dflowFolder.id, JSON_MIME_TYPE);
+        if (dataFile && dataFile.id) {
+           console.log(`Found existing "${DATA_FILE_NAME}" (ID: ${dataFile.id}). Reading it...`);
+          // 3. Read data.json
+          savedFlowData = await readJsonFile(accessToken, dataFile.id);
+          // Check the result of readJsonFile
+          if (savedFlowData === "RATE_LIMITED") {
+              console.warn(`LOAD_FOLDER_DATA: Aborting load for folder ${folderId} due to potential rate limiting during readJsonFile.`);
+              // Optionally inform the user via content script?
               // if (sender.tab?.id) {
-              //   chrome.tabs.sendMessage(sender.tab.id, { type: 'DRIVE_FILES_ERROR', payload: 'Cannot initialize Drive Flow inside a .dflow folder.' });
+              //   chrome.tabs.sendMessage(sender.tab.id, { type: 'DRIVE_FILES_ERROR', payload: 'Could not load saved layout due to Google Drive rate limiting. Please try again later.' });
               // }
-              return; // Stop processing
-          }
-          console.log(`Initial folder ID ${folderId} is valid and not '.dflow' (${folderDetails.name}). Proceeding...`);
-
-          // 1. Look for .dflow folder
-          console.log(`Searching for folder "${DFLOW_FOLDER_NAME}" in parent ${folderId}`);
-          const dflowFolder = await findByName(accessToken, DFLOW_FOLDER_NAME, folderId, FOLDER_MIME_TYPE);
-
-          if (dflowFolder && dflowFolder.id) {
-             console.log(`Found existing "${DFLOW_FOLDER_NAME}" folder with ID: ${dflowFolder.id}`);
-            // 2. Look for data.json inside .dflow
-             console.log(`Searching for file "${DATA_FILE_NAME}" in parent ${dflowFolder.id}`);
-            const dataFile = await findByName(accessToken, DATA_FILE_NAME, dflowFolder.id, JSON_MIME_TYPE);
-            if (dataFile && dataFile.id) {
-               console.log(`Found existing "${DATA_FILE_NAME}" (ID: ${dataFile.id}). Reading it...`);
-              // 3. Read data.json
-              savedFlowData = await readJsonFile(accessToken, dataFile.id);
-              // Check the result of readJsonFile
-              if (savedFlowData === "RATE_LIMITED") {
-                  console.warn(`LOAD_FOLDER_DATA: Aborting load for folder ${folderId} due to potential rate limiting during readJsonFile.`);
-                  // Optionally inform the user via content script?
-                  // if (sender.tab?.id) {
-                  //   chrome.tabs.sendMessage(sender.tab.id, { type: 'DRIVE_FILES_ERROR', payload: 'Could not load saved layout due to Google Drive rate limiting. Please try again later.' });
-                  // }
-                  return; // Stop processing this load request
-              } else if (savedFlowData) {
-                  // Successfully read data (and not rate limited)
-                  dataFileFound = true;
-                  console.log("Successfully read saved flow data.");
-              } else {
-                  // readJsonFile returned null (genuine error or empty file)
-                  console.error(`Failed to read content of "${DATA_FILE_NAME}" (ID: ${dataFile.id}).`);
-              }
-            } else {
-               console.log(`Did not find "${DATA_FILE_NAME}" in folder ${dflowFolder.id}.`);
-            }
+              return; // Stop processing this load request
+          } else if (savedFlowData) {
+              // Successfully read data (and not rate limited)
+              dataFileFound = true;
+              console.log("Successfully read saved flow data.");
           } else {
-             console.log(`Did not find "${DFLOW_FOLDER_NAME}" folder in ${folderId}.`);
+              // readJsonFile returned null (genuine error or empty file)
+              console.error(`Failed to read content of "${DATA_FILE_NAME}" (ID: ${dataFile.id}).`);
           }
+        } else {
+           console.log(`Did not find "${DATA_FILE_NAME}" in folder ${dflowFolder.id}.`);
+        }
+      } else {
+         console.log(`Did not find "${DFLOW_FOLDER_NAME}" folder in ${folderId}.`);
+      }
 
-          // 4. Decide what data to send back
-          if (dataFileFound && savedFlowData) {
-            // Send saved data if successfully found and read
-            console.log("Sending LOAD_SAVED_DATA to content script.");
-            if (sender.tab?.id) {
-              chrome.tabs.sendMessage(sender.tab.id, { type: 'LOAD_SAVED_DATA', payload: savedFlowData });
-            }
+      // 4. Always list files in the target folder
+      console.log(`Listing files in target folder: ${folderId}`);
+      const allFiles = await listFiles(accessToken, folderId);
+      // Filter out the .dflow folder itself from the list sent to the UI
+      const filteredFiles = allFiles.filter(file => !(file.name === DFLOW_FOLDER_NAME && file.mimeType === FOLDER_MIME_TYPE));
+      console.log(`Found ${allFiles.length} total items, preparing ${filteredFiles.length} items (excluding .dflow)`);
+
+      // 5. Combine saved data and file list into a single payload
+      const combinedPayload = {
+          savedData: savedFlowData || { nodes: [], edges: [] }, // Use default if null
+          driveFiles: filteredFiles
+      };
+
+      // 6. Send the combined data in a single message
+      console.log("Sending FOLDER_DATA_LOADED to content script.");
+      if (sender.tab?.id) {
+          chrome.tabs.sendMessage(sender.tab.id, { type: 'FOLDER_DATA_LOADED', payload: combinedPayload });
+      }
+
+      // 7. Handle initial save if no data file was found initially (still needed)
+      if (!dataFileFound) {
+          console.log("No data file found, attempting synchronous initial save...");
+          const initialFlowData = { nodes: [], edges: [] }; // Start empty on canvas
+          const saveSuccess = await saveDataFile(accessToken, folderId, initialFlowData);
+          if (saveSuccess) {
+              console.log("Synchronous initial save completed successfully.");
           } else {
-            // Load initial folder contents if data.json wasn't found/read
-            console.log("Loading initial folder contents as fallback...");
-            const initialFiles = await listFiles(accessToken, folderId);
-            // Filter out the .dflow folder itself from the initial list
-            const filteredFiles = initialFiles.filter(file => !(file.name === DFLOW_FOLDER_NAME && file.mimeType === FOLDER_MIME_TYPE));
-
-            console.log(`Sending initial DRIVE_FILES (${filteredFiles.length} items) to content script.`);
-            if (sender.tab?.id) {
-              // IMPORTANT: Attempt to save this initial state *before* sending to UI
-              const initialFlowData = transformFilesToFlowData(filteredFiles);
-              console.log("Attempting synchronous initial save...");
-              const saveSuccess = await saveDataFile(accessToken, folderId, initialFlowData);
-              if (saveSuccess) {
-                  console.log("Synchronous initial save completed successfully.");
-              } else {
-                  console.error("Synchronous initial save failed. Proceeding without saved state.");
-                  // Decide if we should still send DRIVE_FILES or an error?
-                  // Let's still send DRIVE_FILES for now, but the state won't persist on next load.
-              }
-
-              // Now send the initial files to the content script
-              console.log(`Sending initial DRIVE_FILES (${filteredFiles.length} items) to content script.`);
-              chrome.tabs.sendMessage(sender.tab.id, { type: 'DRIVE_FILES', payload: filteredFiles });
-
-            }
-          } // End of 'else' block (initial load/fallback)
-
-        } catch (error) {
-          console.error("Error during load data process:", error);
-          if (sender.tab?.id) {
-            chrome.tabs.sendMessage(sender.tab.id, { type: 'DRIVE_FILES_ERROR', payload: 'Error loading folder data.' });
-          }
-        }
-
-    // Handle saving data to Drive
-    } else if (message.type === 'SAVE_DATA_TO_DRIVE') {
-        // isAsync = true; // Removed: No response needed for this message type
-        const { folderId, flowData } = message.payload;
-        if (!folderId || !flowData) {
-          console.error("Received SAVE_DATA_TO_DRIVE without folderId or flowData.");
-          return;
-        }
-
-        const accessToken = await getAccessToken();
-        if (!accessToken) {
-          console.error("Cannot save data: Failed to retrieve access token.");
-          return;
-        }
-
-        // Call the refactored save function
-          await saveDataFile(accessToken, folderId, flowData);
-      } else if (message.type === 'REVOKE_AUTH_TOKEN') {
-          console.log("Received REVOKE_AUTH_TOKEN request.");
-          try {
-              // First, get the current token without interaction
-              const currentToken = await chrome.identity.getAuthToken({ interactive: false });
-              if (currentToken && currentToken.token) {
-                  console.log("Attempting to remove cached token...");
-                  await chrome.identity.removeCachedAuthToken({ token: currentToken.token });
-                  console.log("Cached token removed successfully. Next auth attempt will be interactive.");
-              } else {
-                  console.log("No cached token found to remove.");
-              }
-          } catch (err) {
-              console.error("Error during token revocation:", err);
+              console.error("Synchronous initial save failed.");
           }
       }
-      // Add other message handlers here if needed
 
-    } catch (error) { // Add top-level catch block
-        console.error("Unhandled error in background message listener IIFE:", error);
-      // We don't know if sendResponse is expected here, so just log.
+    } catch (error) {
+      console.error("Error during load data process:", error);
+      if (sender.tab?.id) {
+        chrome.tabs.sendMessage(sender.tab.id, { type: 'DRIVE_FILES_ERROR', payload: 'Error loading folder data.' });
+      }
     }
-  })(); // Immediately invoke the async function
+}
+// End Temporarily disabled LOAD_FOLDER_DATA // Restored
 
-  // Return true ONLY if a handler above set isAsync = true (currently none do)
-  return isAsync;
-});
+// Handle saving data to Drive
+// Temporarily disabled to isolate listDriveFiles // Restored
+else if (message.type === 'SAVE_DATA_TO_DRIVE') {
+    // isAsync = true; // Removed: No response needed for this message type
+    const { folderId, flowData } = message.payload;
+    if (!folderId || !flowData) {
+      console.error("Received SAVE_DATA_TO_DRIVE without folderId or flowData.");
+      return;
+    }
+
+    const accessToken = await getAccessToken();
+    if (!accessToken) {
+      console.error("Cannot save data: Failed to retrieve access token.");
+      return;
+    }
+
+    // Call the refactored save function
+    const saveSuccess = await saveDataFile(accessToken, folderId, flowData);
+
+    // After saving, re-list files and send back to UI to update sidebar
+    if (saveSuccess && sender.tab?.id) {
+        console.log(`Save successful for ${folderId}, re-listing files...`);
+        try {
+            // Re-list files
+            const allFiles = await listFiles(accessToken, folderId);
+            const filteredFiles = allFiles.filter(file => !(file.name === DFLOW_FOLDER_NAME && file.mimeType === FOLDER_MIME_TYPE));
+
+            // Re-read the saved data (which was just updated)
+            // Need to find the .dflow folder and data.json file again
+            let latestSavedData = null;
+            const dflowFolder = await findByName(accessToken, DFLOW_FOLDER_NAME, folderId, FOLDER_MIME_TYPE);
+            if (dflowFolder?.id) {
+                const dataFile = await findByName(accessToken, DATA_FILE_NAME, dflowFolder.id, JSON_MIME_TYPE);
+                if (dataFile?.id) {
+                    latestSavedData = await readJsonFile(accessToken, dataFile.id);
+                    if (latestSavedData === "RATE_LIMITED") {
+                         console.warn(`Post-save: Aborting update send for folder ${folderId} due to potential rate limiting during readJsonFile.`);
+                         latestSavedData = null; // Don't send rate limit error to UI here
+                    }
+                }
+            }
+
+            // Combine and send FOLDER_DATA_LOADED
+            const combinedPayload = {
+                savedData: latestSavedData || { nodes: [], edges: [] }, // Use default if re-read failed
+                driveFiles: filteredFiles
+            };
+            console.log(`Sending updated FOLDER_DATA_LOADED after save.`);
+            chrome.tabs.sendMessage(sender.tab.id, { type: 'FOLDER_DATA_LOADED', payload: combinedPayload });
+
+            // Also send a specific message to trigger sidebar refresh
+            console.log(`Sending driveFilesUpdated notification to tab ${sender.tab.id}`);
+            chrome.tabs.sendMessage(sender.tab.id, { type: 'driveFilesUpdated', payload: { folderId: folderId } });
+
+        } catch (listError) {
+            console.error(`Error re-listing files after save for folder ${folderId}:`, listError);
+            // Optionally send an error back? For now, just log.
+        }
+    } else if (!saveSuccess) {
+         console.error(`Save failed for folder ${folderId}, not re-listing files or sending update.`);
+    }
+
+  }
+  // End Temporarily disabled SAVE_DATA_TO_DRIVE // Restored
+  // Temporarily disabled to isolate listDriveFiles // Restored
+  else if (message.type === 'REVOKE_AUTH_TOKEN') {
+      console.log("Received REVOKE_AUTH_TOKEN request.");
+      try {
+          // First, get the current token without interaction
+          const currentToken = await chrome.identity.getAuthToken({ interactive: false });
+          if (currentToken && currentToken.token) {
+              console.log("Attempting to remove cached token...");
+              await chrome.identity.removeCachedAuthToken({ token: currentToken.token });
+              console.log("Cached token removed successfully. Next auth attempt will be interactive.");
+          } else {
+              console.log("No cached token found to remove.");
+          }
+      } catch (err) {
+          console.error("Error during token revocation:", err);
+      }
+  }
+  // End Temporarily disabled REVOKE_AUTH_TOKEN // Restored
+  // Add other message handlers here if needed (like LOAD_FOLDER_DATA, SAVE_DATA_TO_DRIVE etc.)
+
+
+  // IMPORTANT: If the message wasn't handled by a block that uses sendResponse (and returned true),
+  // the listener will implicitly return undefined, which is correct.
+  // Other handlers like LOAD_FOLDER_DATA use chrome.tabs.sendMessage and don't need to return true.
+}); // End addListener
 
 // Listen for clicks on the browser action icon
 chrome.action.onClicked.addListener(async (tab) => {

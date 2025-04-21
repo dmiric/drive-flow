@@ -119,10 +119,12 @@ if (chrome && chrome.runtime && chrome.runtime.onMessage) {
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     console.log('Drive Flow: Content script received message from background:', message.type);
 
-    if (message.type === 'LOAD_SAVED_DATA' || message.type === 'DRIVE_FILES') {
+    // Handle the new combined message type and older types (for potential future use/rollback)
+    // Add LIST_DRIVE_FILES_RESPONSE to the list of messages to forward
+    if (message.type === 'FOLDER_DATA_LOADED' || message.type === 'LOAD_SAVED_DATA' || message.type === 'DRIVE_FILES' || message.type === 'LIST_DRIVE_FILES_RESPONSE') {
        if (currentFolderIsDflow) {
-           console.warn("Drive Flow: Received data but current folder is .dflow. Ignoring.");
-           return false;
+            console.warn("Drive Flow: Received data but current folder is .dflow. Ignoring.");
+           return false; // Important: Return false if not handling asynchronously
        }
        if (!iframe) {
            console.log("Drive Flow: Received data, creating iframe to display.");
@@ -131,8 +133,13 @@ if (chrome && chrome.runtime && chrome.runtime.onMessage) {
        if (iframe) {
            iframe.style.display = 'block'; // Make sure iframe is visible
            if (iframe.contentWindow) {
-               console.log('Drive Flow: Content script forwarding data message to iframe:', message.type);
-               iframe.contentWindow.postMessage(message, '*');
+               // Forward the entire message object, including potential 'error' field
+               console.log('Drive Flow: Content script forwarding message to iframe:', message.type, 'Payload:', message.payload, 'Error:', message.error);
+               // Adapt the message structure for the iframe listener
+               iframe.contentWindow.postMessage({
+                   type: 'BACKGROUND_RESPONSE', // Keep generic type for iframe listener
+                   payload: { requestAction: message.type === 'LIST_DRIVE_FILES_RESPONSE' ? 'listDriveFiles' : message.type, response: message.payload, error: message.error }
+               }, '*'); // Use specific origin
            } else {
                console.error('Drive Flow: Iframe exists but contentWindow not available to forward message.');
            }
@@ -146,6 +153,14 @@ if (chrome && chrome.runtime && chrome.runtime.onMessage) {
     } else if (message.type === 'TOGGLE_IFRAME') {
       console.log('Drive Flow: Received TOGGLE_IFRAME request.');
       toggleIframeVisibility();
+    } else if (message.type === 'driveFilesUpdated') {
+      console.log('Drive Flow: Received driveFilesUpdated notification from background.');
+      if (iframe && iframe.contentWindow) {
+        console.log('Drive Flow: Forwarding driveFilesUpdated notification to iframe.');
+        iframe.contentWindow.postMessage(message, '*');
+      } else {
+        console.warn('Drive Flow: Received driveFilesUpdated but iframe or contentWindow not available.');
+      }
     }
     return false; // Indicate synchronous response or no response needed
   });
@@ -156,6 +171,13 @@ if (chrome && chrome.runtime && chrome.runtime.onMessage) {
 
 // Listen for save requests FROM the iframe
 window.addEventListener('message', (event) => {
+  // Use an async IIFE to allow await inside the listener
+  (async () => {
+  // IMPORTANT: Add origin check in production
+  // if (event.origin !== chrome.runtime.getURL('').slice(0, -1)) { // Check against extension origin
+  //   console.warn("Ignoring message from unexpected origin:", event.origin);
+  // }
+ 
   if (event.data && event.data.type === 'SAVE_FLOW_DATA') {
     console.log('Drive Flow: Received SAVE_FLOW_DATA from iframe.');
     if (currentFolderIsDflow) {
@@ -180,7 +202,14 @@ window.addEventListener('message', (event) => {
     } else {
       console.error("Drive Flow: Cannot save data, not in a recognized folder URL.");
     }
+  } else if (event.data && event.data.type === 'RELAY_TO_BACKGROUND') { // <-- Re-add this block
+    console.log('Drive Flow: Received RELAY_TO_BACKGROUND from iframe:', event.data.payload);
+    // Relay the message payload to the background script.
+    // No need to await or handle response here, as it comes via chrome.runtime.onMessage.
+    chrome.runtime.sendMessage(event.data.payload)
+      .catch(err => console.error("Drive Flow: Error sending RELAY_TO_BACKGROUND message:", err));
   }
+  })(); // Immediately invoke the async IIFE
 });
 
 // --- Main Execution ---

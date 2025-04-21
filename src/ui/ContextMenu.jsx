@@ -8,6 +8,7 @@ export default function ContextMenu({
   right,
   bottom,
   onClick, // Function to close the menu
+  onRemoveNode, // Function to remove the node
   ...props
 }) {
   const handleOpenInDrive = useCallback(() => {
@@ -24,6 +25,13 @@ export default function ContextMenu({
     onClick(); // Close the menu after clicking
   }, [id, mimeType, onClick]);
 
+  const handleRemoveNode = useCallback(() => {
+    if (onRemoveNode) {
+      onRemoveNode(id); // Call the remove function with the node ID
+    }
+    onClick(); // Close the menu
+  }, [id, onRemoveNode, onClick]);
+
   return (
     <div
       style={{ top, left, right, bottom }}
@@ -31,6 +39,7 @@ export default function ContextMenu({
       {...props}
     >
       <button onClick={handleOpenInDrive}>Open in Drive</button>
+      <button onClick={handleRemoveNode}>Remove Node</button>
       {/* Add other menu items here if needed */}
     </div>
   );

@@ -39,3 +39,49 @@ body {
 .context-menu button:hover {
   background-color: #f0f0f0;
 }
+
+/* Drag and Drop Layout */
+.dnd-flow {
+  display: flex;
+  flex-direction: row;
+  height: 100vh; /* Ensure full viewport height */
+}
+
+.sidebar {
+  width: 200px; /* Adjust width as needed */
+  border-right: 1px solid #ccc;
+  padding: 15px 10px;
+  font-size: 12px;
+  background: #f7f7f7;
+  overflow-y: auto; /* Allow scrolling if many items */
+  flex-shrink: 0; /* Prevent sidebar from shrinking */
+}
+
+.sidebar .description {
+  margin-bottom: 10px;
+  font-weight: bold;
+}
+
+.sidebar-item {
+  padding: 8px 10px;
+  margin-bottom: 5px;
+  border: 1px solid #eee;
+  border-radius: 4px;
+  background: white;
+  cursor: grab; /* Indicate draggable */
+}
+
+.sidebar-item:active {
+  cursor: grabbing;
+}
+
+.sidebar-empty {
+  color: #888;
+  font-style: italic;
+}
+
+
+.react-flow-wrapper {
+  flex-grow: 1; /* Allow React Flow to take remaining space */
+  height: 100%; /* Ensure it fills the height */
+}
