@@ -2,6 +2,8 @@ console.log("Drive Flow: Content script loaded.");
 
 let iframe = null; // Keep iframe reference
 let currentFolderIsDflow = false; // Flag to track if we are inside .dflow
+let lastDetectedFolderId = null; // Store the last detected folder ID
+let isIframeReady = false; // Flag to track if iframe has sent SIDEBAR_READY
 
 // --- Initialization and Helper Functions ---
 
@@ -70,6 +72,7 @@ function toggleIframeVisibility() {
 function checkUrlAndLoadData(triggeredByToggle = false) {
   const currentUrl = window.location.href;
   const folderId = getFolderIdFromUrl(currentUrl);
+  lastDetectedFolderId = folderId || 'root'; // Store the detected ID (or 'root')
   // We no longer check if the folder is .dflow here, background script handles it
 
   if (folderId) {
@@ -85,6 +88,15 @@ function checkUrlAndLoadData(triggeredByToggle = false) {
 
     // Request data only if iframe exists
     if (iframe) {
+      // Send the current folder ID to the iframe *if it's ready*
+      if (isIframeReady && iframe.contentWindow) {
+        console.log(`Drive Flow: Sending CURRENT_FOLDER_ID (${folderId}) to iframe.`);
+        iframe.contentWindow.postMessage({ type: 'CURRENT_FOLDER_ID', payload: { folderId: folderId } }, '*'); // Use specific origin
+      } else {
+        console.log("Drive Flow: Iframe not ready yet, delaying CURRENT_FOLDER_ID send.");
+      }
+
+      // Still schedule the background data load regardless of iframe readiness
       // Send LOAD_FOLDER_DATA after a short delay to allow background script to potentially activate.
       // Don't await or expect a direct response.
       console.log('Drive Flow: Scheduling LOAD_FOLDER_DATA request to background (fire and forget).');
@@ -105,6 +117,11 @@ function checkUrlAndLoadData(triggeredByToggle = false) {
   } else { // This else corresponds to 'if (folderId)'
     console.log("Drive Flow: Not currently in a recognized Google Drive folder URL.");
     currentFolderIsDflow = false; // Ensure flag is reset
+    // Send 'root' to iframe *if it's ready*
+    if (isIframeReady && iframe && iframe.contentWindow) {
+        console.log(`Drive Flow: Sending CURRENT_FOLDER_ID (root) to iframe.`);
+        iframe.contentWindow.postMessage({ type: 'CURRENT_FOLDER_ID', payload: { folderId: 'root' } }, '*'); // Use specific origin
+    }
     if (iframe) iframe.style.display = 'none';
   }
 }
@@ -202,6 +219,15 @@ window.addEventListener('message', (event) => {
     } else {
       console.error("Drive Flow: Cannot save data, not in a recognized folder URL.");
     }
+  } else if (event.data && event.data.type === 'SIDEBAR_READY') { // <-- Listen for SIDEBAR_READY
+      console.log("Drive Flow: Received SIDEBAR_READY from iframe.");
+      isIframeReady = true;
+      // Send the stored folder ID now that the iframe is ready
+      if (iframe && iframe.contentWindow && lastDetectedFolderId) {
+          console.log(`Drive Flow: Sending stored CURRENT_FOLDER_ID (${lastDetectedFolderId}) to ready iframe.`);
+          iframe.contentWindow.postMessage({ type: 'CURRENT_FOLDER_ID', payload: { folderId: lastDetectedFolderId } }, '*');
+      }
+
   } else if (event.data && event.data.type === 'RELAY_TO_BACKGROUND') { // <-- Re-add this block
     console.log('Drive Flow: Received RELAY_TO_BACKGROUND from iframe:', event.data.payload);
     // Relay the message payload to the background script.

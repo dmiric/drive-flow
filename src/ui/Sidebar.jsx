@@ -5,19 +5,27 @@ export default function Sidebar({ onDragStart, updateCounter }) {
   const [driveFiles, setDriveFiles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [currentFolderId, setCurrentFolderId] = useState(null); // Initialize folder ID state to null
   const fetchAttemptRef = useRef(0); // Ref to track fetch attempts
 
   useEffect(() => {
     // Function to fetch files from the background script with retry logic
     const fetchFiles = (isRetry = false) => {
+      // Use the currentFolderId from state
+      const folderToFetch = currentFolderId || 'root'; // Default to 'root' if null/undefined
+      // Should not happen now due to the check below, but keep for safety
+      if (!folderToFetch) {
+          console.warn("Sidebar: fetchFiles called with null/empty folderId. Aborting.");
+          return;
+      }
       fetchAttemptRef.current += 1;
-      console.log(`Sidebar: fetchFiles called (Attempt: ${fetchAttemptRef.current}). Sending listDriveFiles message...`);
-      setLoading(true);
+      console.log(`Sidebar: fetchFiles called for folder '${folderToFetch}' (Attempt: ${fetchAttemptRef.current}).`);
+      setLoading(true); // Set loading true at the start of fetch
       setError(null);
 
      // Send message to parent window (content script) instead of directly to background
      console.log(`Sidebar: Posting 'listDriveFiles' message to parent window (Attempt: ${fetchAttemptRef.current})`);
-     window.parent.postMessage({ type: 'RELAY_TO_BACKGROUND', payload: { action: 'listDriveFiles', folderId: 'root' } }, '*'); // Use specific origin in production
+     window.parent.postMessage({ type: 'RELAY_TO_BACKGROUND', payload: { action: 'listDriveFiles', folderId: folderToFetch } }, '*'); // Use specific origin in production
 
      // NOTE: We can no longer directly use the response callback from chrome.runtime.sendMessage here.
      // The response will come back via a 'message' event from the parent window (content script).
@@ -66,10 +74,13 @@ export default function Sidebar({ onDragStart, updateCounter }) {
      */
     };
 
-    fetchAttemptRef.current = 0; // Reset attempt counter on effect run
-    fetchFiles(); // Initial fetch attempt
+    // Fetch files whenever currentFolderId changes or updateCounter increments
+    // Only fetch if we have a valid folder ID
+    if (currentFolderId) {
+        fetchAttemptRef.current = 0; // Reset attempt counter
+        fetchFiles();
+    }
 
-    // TODO: Add listener for updates from background script (watch API)
     // const messageListener = (message, sender, sendResponse) => {
     //   if (message.action === 'driveFilesUpdated') {
     //     console.log('Received file update notification');
@@ -83,7 +94,7 @@ export default function Sidebar({ onDragStart, updateCounter }) {
     //   chrome.runtime.onMessage.removeListener(messageListener);
     // };
 
-  }, [updateCounter]); // Add updateCounter to dependency array
+  }, [currentFolderId, updateCounter]); // Add currentFolderId and updateCounter to dependency array
 
  // Effect to listen for the response from the content script
  useEffect(() => {
@@ -123,6 +134,29 @@ export default function Sidebar({ onDragStart, updateCounter }) {
    return () => window.removeEventListener('message', handleMessage);
  }, []); // Run only once on mount
 
+ // Effect to listen for the CURRENT_FOLDER_ID from the content script
+ useEffect(() => {
+   const handleFolderIdMessage = (event) => {
+     // IMPORTANT: Add origin check in production
+     // if (event.origin !== 'expected-origin') return;
+
+     if (event.data && event.data.type === 'CURRENT_FOLDER_ID') {
+       const newFolderId = event.data.payload?.folderId || 'root';
+       console.log(`Sidebar: Received CURRENT_FOLDER_ID: ${newFolderId}`);
+       setCurrentFolderId(newFolderId); // Update state, triggering the other useEffect
+     }
+   };
+   window.addEventListener('message', handleFolderIdMessage);
+   return () => window.removeEventListener('message', handleFolderIdMessage);
+ }, []); // Run only once on mount
+
+ // Effect to notify content script that the sidebar is ready
+ useEffect(() => {
+   console.log("Sidebar: Component mounted, sending SIDEBAR_READY to parent.");
+   window.parent.postMessage({ type: 'SIDEBAR_READY' }, '*'); // Use specific origin
+   // No cleanup needed for this simple one-time message
+ }, []); // Run only once on mount
+
   // Function to handle drag start, passing the Drive file item
   const handleDragStart = (event, file) => {
     // We need to pass enough info to identify the file and its type
@@ -146,7 +180,8 @@ export default function Sidebar({ onDragStart, updateCounter }) {
       {loading && <div className="sidebar-loading">Loading...</div>}
       {error && <div className="sidebar-error">{error}</div>}
       {!loading && !error && driveFiles.length === 0 && (
-        <div className="sidebar-empty">No files or folders found in 'root'.</div>
+        // Update empty message to use currentFolderId
+        <div className="sidebar-empty">No files or folders found in '{currentFolderId}'.</div>
       )}
       {!loading && !error && driveFiles.length > 0 && (
         driveFiles.map((file) => (
