@@ -1,4 +1,41 @@
 /* Add a basic rule to prevent Vite from optimizing this file away */
 body {
   font-family: sans-serif;
+  margin: 0; /* Remove default body margin */
+  height: 100vh; /* Ensure body takes full height */
+  width: 100vw; /* Ensure body takes full width */
+  overflow: hidden; /* Prevent scrollbars on body if flow fits */
+}
+
+/* Ensure the React Flow container fills the body */
+.drive-flow-ui {
+  height: 100%;
+  width: 100%;
+}
+
+
+/* Context Menu Styling */
+.context-menu {
+  position: absolute;
+  background-color: white;
+  border: 1px solid #ccc;
+  box-shadow: 2px 2px 5px rgba(0, 0, 0, 0.1);
+  padding: 5px;
+  z-index: 1000; /* Ensure it appears above the flow */
+  min-width: 120px; /* Give it some minimum width */
+}
+
+.context-menu button {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.context-menu button:hover {
+  background-color: #f0f0f0;
 }
