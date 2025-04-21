@@ -37,6 +37,7 @@ To build and run this extension locally:
         npm run build
         ```
     *   This will generate the necessary static assets in the `src/ui/dist` directory.
+    *   **Note:** The background scripts (`src/background/`) and content scripts (`src/content/`) do not require a separate build step; they are used directly by the extension.
 
 4.  **Load the Extension in Chrome:**
     *   Open Chrome and navigate to `chrome://extensions/`.
