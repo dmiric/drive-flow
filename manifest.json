@@ -12,13 +12,12 @@
   "host_permissions": [
     "https://www.googleapis.com/drive/v3/files*",
     "https://drive.google.com/*",
-    "https://drive.mindmup.com/*",
     "https://cdn.skypack.dev/*"
   ],
   "oauth2": {
     "client_id": "74208567950-blur2nggd4sapmrf60l4na933dbbma60.apps.googleusercontent.com",
     "scopes": [
-      "https://www.googleapis.com/auth/drive.readonly"
+      "https://www.googleapis.com/auth/drive"
     ]
   },
   "action": {
@@ -30,7 +29,6 @@
   "content_scripts": [
     {
       "matches": [
-        "*://example.com/*",
         "https://drive.google.com/*"
       ],
       "js": [
@@ -54,7 +52,6 @@
         "test.html"
       ],
       "matches": [
-        "*://example.com/*",
         "https://drive.google.com/*"
       ]
     }

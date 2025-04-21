@@ -1,11 +1,14 @@
 console.log("Drive Flow: Content script loaded.");
 
 let iframe = null; // Keep iframe reference
+let currentFolderIsDflow = false; // Flag to track if we are inside .dflow
+
+// --- Initialization and Helper Functions ---
 
 function initializeIframe() {
   if (document.getElementById('drive-flow-iframe')) {
     console.log("Drive Flow: Iframe already exists.");
-    return; // Avoid creating multiple iframes
+    return;
   }
   console.log("Drive Flow: Creating iframe.");
   iframe = document.createElement('iframe');
@@ -19,106 +22,179 @@ function initializeIframe() {
   border: none; /* Ensure no border */
   z-index: 999999;
     background: transparent;
+    display: none; /* Start hidden */
   `;
-  const iframeSrc = chrome.runtime.getURL('src/ui/dist/index.html'); // Use path including src/
-  console.log("Drive Flow: Setting iframe src to:", iframeSrc); // Log the generated URL
-  iframe.src = iframeSrc;
-  document.body.appendChild(iframe);
-  console.log('Drive Flow: Iframe appended to body.');
-
-  // Listen for messages FROM the background script (moved inside initialization)
-  if (chrome && chrome.runtime && chrome.runtime.onMessage) {
-    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-      console.log('Drive Flow: Content script received message from background:', message.type);
-
-      if (message.type === 'DRIVE_FILES' || message.type === 'DRIVE_FILES_ERROR') {
-        // Forward the response INTO the iframe
-        if (iframe && iframe.contentWindow) {
-          console.log('Drive Flow: Content script forwarding message to iframe:', message.type);
-          iframe.contentWindow.postMessage(message, '*'); // Use specific origin target in production
-        } else {
-          console.error('Drive Flow: Iframe or contentWindow not available to forward message.');
-        }
-      } else if (message.type === 'TOGGLE_IFRAME') { // Correctly chained else if
-        console.log('Drive Flow: Received TOGGLE_IFRAME request.');
-        toggleIframeVisibility();
-      }
-      // Indicate synchronous response or no response needed
-      return false; // Return false if not sending an async response
-    });
+  if (chrome && chrome.runtime && chrome.runtime.getURL) {
+      const iframeSrc = chrome.runtime.getURL('src/ui/dist/index.html');
+      console.log("Drive Flow: Setting iframe src to:", iframeSrc);
+      iframe.src = iframeSrc;
+      document.body.appendChild(iframe);
+      console.log('Drive Flow: Iframe appended to body (initially hidden).');
   } else {
-    console.error("Drive Flow: Could not add message listener, chrome.runtime or chrome.runtime.onMessage is unavailable.");
+      console.error("Drive Flow: Cannot create iframe, chrome.runtime.getURL is not available.");
+      iframe = null;
   }
 }
 
 function getFolderIdFromUrl(url) {
-  // Regex to capture the folder ID from Google Drive URLs
-  // Example: https://drive.google.com/drive/u/0/folders/1a2b3c4d5e...
   const match = url.match(/drive\.google\.com\/drive\/(?:u\/\d+\/)?folders\/([a-zA-Z0-9_-]+)/);
   return match ? match[1] : null;
 }
 
-// Function to toggle iframe visibility
 function toggleIframeVisibility() {
-  if (!iframe) {
-    // If iframe doesn't exist yet, create it first (and maybe trigger data load?)
-    console.log("Drive Flow: Toggle requested, but iframe doesn't exist. Creating it.");
-    // Check URL again to decide if we should load data
-    checkUrlAndRequestData(); // This will create iframe and request data if in a folder
-  } else {
-    // If iframe exists, toggle its display
-    const currentDisplay = iframe.style.display;
-    iframe.style.display = currentDisplay === 'none' ? 'block' : 'none'; // Toggle display
-    console.log(`Drive Flow: Toggled iframe display to ${iframe.style.display}`);
-  }
+    if (currentFolderIsDflow) {
+        console.log("Drive Flow: Toggle ignored, currently inside a .dflow folder.");
+        return;
+    }
+    if (!iframe) {
+        console.log("Drive Flow: Toggle requested, but iframe doesn't exist. Creating it (will be hidden initially).");
+        initializeIframe();
+        if (iframe) {
+            iframe.style.display = 'block';
+            console.log(`Drive Flow: Toggled iframe display to block`);
+            // Trigger data load check *after* creating and showing iframe on first toggle
+            checkUrlAndLoadData(true); // Pass flag to indicate it's from toggle
+        }
+    } else {
+        const currentDisplay = iframe.style.display;
+        iframe.style.display = currentDisplay === 'none' ? 'block' : 'none';
+        console.log(`Drive Flow: Toggled iframe display to ${iframe.style.display}`);
+        // If toggling to visible and nodes haven't loaded, maybe trigger load?
+        // This depends on desired behavior if user navigates away then toggles back.
+    }
 }
 
-function checkUrlAndRequestData() {
+// REMOVED sendMessageWithRetry function
+
+// Main logic function
+function checkUrlAndLoadData(triggeredByToggle = false) {
   const currentUrl = window.location.href;
   const folderId = getFolderIdFromUrl(currentUrl);
+  // We no longer check if the folder is .dflow here, background script handles it
 
   if (folderId) {
-    console.log(`Drive Flow: Detected Google Drive folder ID: ${folderId}`);
-    // Ensure iframe exists before sending message
+    console.log(`Drive Flow: Detected folder ID: ${folderId}. Proceeding with initialization.`);
+    currentFolderIsDflow = false; // Assume not .dflow initially, background will abort if needed
+
+    // Initialize iframe if needed
     if (!iframe) {
-    initializeIframe();
+      initializeIframe();
+    } else if (!triggeredByToggle) { // Only hide if not triggered by toggle (toggle handles visibility)
+       iframe.style.display = 'none';
     }
-    // Request data for this specific folder
-    if (chrome && chrome.runtime) {
-      console.log('Drive Flow: Sending GET_SPECIFIC_DRIVE_FOLDER request to background.');
-      chrome.runtime.sendMessage({ type: 'GET_SPECIFIC_DRIVE_FOLDER', payload: { folderId: folderId } })
-        .catch(err => console.error("Drive Flow: Error sending message to background:", err));
-    } else {
-      console.error("Drive Flow: chrome.runtime API not available when trying to send message.");
-    }
+
+    // Request data only if iframe exists
+    if (iframe) {
+      // Send LOAD_FOLDER_DATA after a short delay to allow background script to potentially activate.
+      // Don't await or expect a direct response.
+      console.log('Drive Flow: Scheduling LOAD_FOLDER_DATA request to background (fire and forget).');
+      setTimeout(() => {
+          chrome.runtime.sendMessage({ type: 'LOAD_FOLDER_DATA', payload: { folderId: folderId } })
+              .catch(error => {
+                  // Catch potential errors if the background script connection is immediately broken
+                  console.error("Drive Flow: Error sending initial LOAD_FOLDER_DATA message:", error);
+                  if (iframe) iframe.style.display = 'none'; // Hide on error
+              });
+      }, 100); // 100ms delay
   } else {
+        // This else corresponds to 'if (iframe)'
+        console.warn("Drive Flow: Not requesting data because iframe failed to initialize.");
+        // No need to hide iframe here as it doesn't exist
+    }
+
+  } else { // This else corresponds to 'if (folderId)'
     console.log("Drive Flow: Not currently in a recognized Google Drive folder URL.");
-    // Optional: Remove or hide the iframe if not in a folder?
-    // if (iframe && iframe.style.display !== 'none') { // Only hide if visible
-    //   console.log("Drive Flow: Hiding iframe because not in a folder URL.");
-    //   iframe.style.display = 'none';
-    // }
+    currentFolderIsDflow = false; // Ensure flag is reset
+    if (iframe) iframe.style.display = 'none';
   }
 }
+
+// REMOVED proceedWithInitialization function as it's merged back
+
+
+// --- Global Listener Setup ---
+
+// Listen for messages FROM the background script
+if (chrome && chrome.runtime && chrome.runtime.onMessage) {
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    console.log('Drive Flow: Content script received message from background:', message.type);
+
+    if (message.type === 'LOAD_SAVED_DATA' || message.type === 'DRIVE_FILES') {
+       if (currentFolderIsDflow) {
+           console.warn("Drive Flow: Received data but current folder is .dflow. Ignoring.");
+           return false;
+       }
+       if (!iframe) {
+           console.log("Drive Flow: Received data, creating iframe to display.");
+           initializeIframe();
+       }
+       if (iframe) {
+           iframe.style.display = 'block'; // Make sure iframe is visible
+           if (iframe.contentWindow) {
+               console.log('Drive Flow: Content script forwarding data message to iframe:', message.type);
+               iframe.contentWindow.postMessage(message, '*');
+           } else {
+               console.error('Drive Flow: Iframe exists but contentWindow not available to forward message.');
+           }
+       } else {
+            console.error("Drive Flow: Failed to initialize iframe to display received data.");
+       }
+    } else if (message.type === 'DRIVE_FILES_ERROR') {
+        console.error("Drive Flow: Received error from background:", message.payload);
+        // Hide iframe on error?
+         if(iframe) iframe.style.display = 'none';
+    } else if (message.type === 'TOGGLE_IFRAME') {
+      console.log('Drive Flow: Received TOGGLE_IFRAME request.');
+      toggleIframeVisibility();
+    }
+    return false; // Indicate synchronous response or no response needed
+  });
+} else {
+  console.error("Drive Flow: Could not add background message listener.");
+}
+
+
+// Listen for save requests FROM the iframe
+window.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SAVE_FLOW_DATA') {
+    console.log('Drive Flow: Received SAVE_FLOW_DATA from iframe.');
+    if (currentFolderIsDflow) {
+        console.error("Drive Flow: Save aborted, currently inside a .dflow folder.");
+        return;
+    }
+    const currentFolderId = getFolderIdFromUrl(window.location.href);
+    if (currentFolderId) {
+        try {
+             console.log(`Drive Flow: Relaying SAVE_DATA_TO_DRIVE to background for folder ${currentFolderId}.`);
+             // No retry needed here? If connection fails, save just fails.
+             chrome.runtime.sendMessage({
+                 type: 'SAVE_DATA_TO_DRIVE',
+                 payload: {
+                     folderId: currentFolderId,
+                     flowData: event.data.payload
+                 }
+             }).catch(err => console.error("Drive Flow: Error sending SAVE_DATA_TO_DRIVE to background:", err)); // Catch potential promise rejection
+        } catch(error) {
+             console.error("Drive Flow: Error trying to send SAVE_DATA_TO_DRIVE:", error);
+        }
+    } else {
+      console.error("Drive Flow: Cannot save data, not in a recognized folder URL.");
+    }
+  }
+});
 
 // --- Main Execution ---
 
 // Initial check when the script loads
-checkUrlAndRequestData();
+checkUrlAndLoadData();
 
-// Google Drive uses the History API for navigation, so listen for changes
-// We need a robust way to detect navigation. Using MutationObserver on title/body
-// might be more reliable than just popstate or hashchange.
+// Google Drive uses the History API for navigation
 let lastUrl = location.href;
 new MutationObserver(() => {
   const url = location.href;
   if (url !== lastUrl) {
     lastUrl = url;
     console.log(`Drive Flow: URL changed to ${url}`);
-    checkUrlAndRequestData();
+    checkUrlAndLoadData(); // Rerun the check and load logic
   }
 }).observe(document.body, {subtree: true, childList: true});
-
-
-// NOTE: The iframe UI (React app) should NO LONGER send the initial 'GET_DRIVE_FILES' message.
-// It should only listen for 'DRIVE_FILES' or 'DRIVE_FILES_ERROR' messages forwarded by this content script.
