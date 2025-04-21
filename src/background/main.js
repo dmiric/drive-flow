@@ -6,7 +6,8 @@ import {
   createJsonFile,
   updateJsonFile,
   readJsonFile,
-  getFolderDetails // Import the new function
+  getFolderDetails, // Import the new function
+  readFileContent // Added readFileContent
 } from './driveApi.js';
 
 console.log("Background script running");
@@ -16,6 +17,8 @@ const DFLOW_FOLDER_NAME = '.dflow';
 const DATA_FILE_NAME = 'data.json';
 const FOLDER_MIME_TYPE = 'application/vnd.google-apps.folder';
 const JSON_MIME_TYPE = 'application/json';
+const BACKGROUND_IMAGE_NAME = 'background.jpg'; // Constant for the background image name
+const BACKGROUND_NODE_ID = 'background-image-node'; // Constant ID for the background node
 
 // Helper function to convert Drive files list to initial React Flow nodes
 function transformFilesToFlowData(files) {
@@ -230,6 +233,8 @@ chrome.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
 
     let savedFlowData = null;
     let dataFileFound = false;
+    let backgroundImageDataUrl = null; // Variable to hold the background image data URL (still needed temporarily)
+    savedFlowData = { nodes: [], edges: [] }; // Initialize savedFlowData first
 
     try {
       // 0. Validate the folderId itself before proceeding
@@ -257,6 +262,34 @@ chrome.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
       // 1. Look for .dflow folder
       console.log(`Searching for folder "${DFLOW_FOLDER_NAME}" in parent ${folderId}`);
       const dflowFolder = await findByName(accessToken, DFLOW_FOLDER_NAME, folderId, FOLDER_MIME_TYPE);
+      let dflowFolderId = dflowFolder?.id; // Store the ID if found
+
+      // --- Find and process background.jpg if .dflow folder exists ---
+      if (dflowFolderId) {
+        console.log(`Searching for file "${BACKGROUND_IMAGE_NAME}" in parent ${dflowFolderId}`);
+        // Search specifically for image mime types if needed, or just by name
+        const backgroundImageFile = await findByName(accessToken, BACKGROUND_IMAGE_NAME, dflowFolderId); // No mimeType needed if name is unique
+        if (backgroundImageFile?.id) {
+          console.log(`Found "${BACKGROUND_IMAGE_NAME}" (ID: ${backgroundImageFile.id}). Reading content...`);
+          const imageArrayBuffer = await readFileContent(accessToken, backgroundImageFile.id);
+          if (imageArrayBuffer) {
+            // Convert ArrayBuffer to Base64 Data URL using chunks to avoid stack overflow
+            let binary = '';
+            const bytes = new Uint8Array(imageArrayBuffer);
+            const len = bytes.byteLength;
+            const chunkSize = 8192; // Process in 8KB chunks
+            for (let i = 0; i < len; i += chunkSize) {
+                const chunk = bytes.subarray(i, Math.min(i + chunkSize, len));
+                binary += String.fromCharCode.apply(null, chunk);
+            }
+            const base64String = btoa(binary);
+            backgroundImageDataUrl = `data:image/jpeg;base64,${base64String}`;
+            console.log(`Successfully read and converted "${BACKGROUND_IMAGE_NAME}" to Data URL.`);
+          }
+        } else {
+          console.log(`Did not find "${BACKGROUND_IMAGE_NAME}" in folder ${dflowFolderId}.`);
+        }
+      }
 
       if (dflowFolder && dflowFolder.id) {
          console.log(`Found existing "${DFLOW_FOLDER_NAME}" folder with ID: ${dflowFolder.id}`);
@@ -279,15 +312,44 @@ chrome.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
               // Successfully read data (and not rate limited)
               dataFileFound = true;
               console.log("Successfully read saved flow data.");
-          } else {
-              // readJsonFile returned null (genuine error or empty file)
+          } else { // readJsonFile returned null (genuine error or empty file)
               console.error(`Failed to read content of "${DATA_FILE_NAME}" (ID: ${dataFile.id}).`);
+              // savedFlowData remains the initialized empty object
           }
         } else {
            console.log(`Did not find "${DATA_FILE_NAME}" in folder ${dflowFolder.id}.`);
+           // Ensure savedFlowData is initialized if data file doesn't exist
+           // Moved initialization earlier
         }
       } else {
          console.log(`Did not find "${DFLOW_FOLDER_NAME}" folder in ${folderId}.`);
+         // savedFlowData remains the initialized empty object
+         /* // Original initialization logic - moved earlier
+         // Ensure savedFlowData is initialized if .dflow folder doesn't exist
+         if (!savedFlowData) {
+             savedFlowData = { nodes: [], edges: [] };
+         }
+         */
+      }
+
+      // --- Add/Update background image node in savedData ---
+      // This now runs *after* savedFlowData has been potentially loaded from data.json
+      if (backgroundImageDataUrl) {
+          const existingBgNodeIndex = savedFlowData.nodes.findIndex(node => node.id === BACKGROUND_NODE_ID);
+          if (existingBgNodeIndex > -1) {
+              // Update existing background node's data
+              console.log("Updating existing background image node data.");
+              savedFlowData.nodes[existingBgNodeIndex].data = { ...(savedFlowData.nodes[existingBgNodeIndex].data || {}), imageUrl: backgroundImageDataUrl };
+          } else {
+              // Add new background node
+              console.log("Adding new background image node.");
+              savedFlowData.nodes.push({
+                  id: BACKGROUND_NODE_ID, type: 'imageNode', data: { imageUrl: backgroundImageDataUrl },
+                  position: { x: 0, y: 0 }, // Default position
+                  draggable: true, selectable: true, // Make it movable/selectable
+                  style: { width: 'auto', height: 'auto', zIndex: -1 } // Ensure it's behind other nodes
+              });
+          }
       }
 
       // 4. Always list files in the target folder
@@ -299,8 +361,9 @@ chrome.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
 
       // 5. Combine saved data and file list into a single payload
       const combinedPayload = {
-          savedData: savedFlowData || { nodes: [], edges: [] }, // Use default if null
+          savedData: savedFlowData, // savedFlowData is now guaranteed to be initialized
           driveFiles: filteredFiles
+          // REMOVED: backgroundImageDataUrl: backgroundImageDataUrl // Image data is now within savedData.nodes
       };
 
       // 6. Send the combined data in a single message
@@ -363,6 +426,25 @@ else if (message.type === 'SAVE_DATA_TO_DRIVE') {
             const dflowFolder = await findByName(accessToken, DFLOW_FOLDER_NAME, folderId, FOLDER_MIME_TYPE);
             if (dflowFolder?.id) {
                 const dataFile = await findByName(accessToken, DATA_FILE_NAME, dflowFolder.id, JSON_MIME_TYPE);
+
+                // --- Also re-fetch background image after save ---
+                let postSaveImageUrl = null;
+                const backgroundImageFile = await findByName(accessToken, BACKGROUND_IMAGE_NAME, dflowFolder.id);
+                if (backgroundImageFile?.id) {
+                    const imageArrayBuffer = await readFileContent(accessToken, backgroundImageFile.id);
+                    if (imageArrayBuffer) {
+                        let binary = '';
+                        const bytes = new Uint8Array(imageArrayBuffer);
+                        const len = bytes.byteLength;
+                        const chunkSize = 8192;
+                        for (let i = 0; i < len; i += chunkSize) {
+                            const chunk = bytes.subarray(i, Math.min(i + chunkSize, len));
+                            binary += String.fromCharCode.apply(null, chunk);
+                        }
+                        postSaveImageUrl = `data:image/jpeg;base64,${btoa(binary)}`;
+                    }
+                }
+                // --- End re-fetch background image ---
                 if (dataFile?.id) {
                     latestSavedData = await readJsonFile(accessToken, dataFile.id);
                     if (latestSavedData === "RATE_LIMITED") {
@@ -371,6 +453,16 @@ else if (message.type === 'SAVE_DATA_TO_DRIVE') {
                     }
                 }
             }
+
+            // --- Re-insert imageUrl into latestSavedData if found ---
+            if (postSaveImageUrl && latestSavedData?.nodes) {
+                const bgNodeIndex = latestSavedData.nodes.findIndex(n => n.id === BACKGROUND_NODE_ID);
+                if (bgNodeIndex > -1) {
+                    console.log("Re-inserting background image URL into post-save data.");
+                    latestSavedData.nodes[bgNodeIndex].data = { ...(latestSavedData.nodes[bgNodeIndex].data || {}), imageUrl: postSaveImageUrl };
+                }
+            }
+            // --- End re-insert ---
 
             // Combine and send FOLDER_DATA_LOADED
             const combinedPayload = {

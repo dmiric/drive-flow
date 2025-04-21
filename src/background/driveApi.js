@@ -313,4 +313,31 @@ async function getFolderDetails(accessToken, folderId) {
 }
 
 
-export { listFiles, findByName, createFolder, createJsonFile, updateJsonFile, readJsonFile, getFolderDetails }; // Added getFolderDetails
+/**
+ * Reads the raw content of a file.
+ * @param {string} accessToken Google OAuth access token.
+ * @param {string} fileId The ID of the file to read.
+ * @returns {Promise<ArrayBuffer|null>} A promise resolving to the file content as ArrayBuffer or null on failure.
+ */
+async function readFileContent(accessToken, fileId) {
+  try {
+    const url = `${DRIVE_API_URL}/files/${fileId}?alt=media`;
+    // console.log(`Drive API: Reading raw content of file ID ${fileId}`); // Logging done by fetchDriveApi
+    const response = await fetchDriveApi(url, accessToken); // Pass accessToken
+
+    if (response.ok) {
+      const arrayBuffer = await response.arrayBuffer(); // Get content as ArrayBuffer
+      console.log(`Drive API: Successfully read raw content for file ID ${fileId}`);
+      return arrayBuffer;
+    } else {
+      const errorText = await response.text(); // Get error text for debugging
+      console.error(`Drive API: Error reading raw content for file ID ${fileId} - Status ${response.status}:`, errorText);
+      return null; // Return null for errors
+    }
+  } catch (error) {
+    console.error(`Drive API: Error reading raw content for file ID ${fileId}:`, error);
+    return null;
+  }
+}
+
+export { listFiles, findByName, createFolder, createJsonFile, updateJsonFile, readJsonFile, getFolderDetails, readFileContent }; // Added readFileContent

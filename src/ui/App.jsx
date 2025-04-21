@@ -9,6 +9,7 @@ import ReactFlow, {
 } from 'reactflow';
 import 'reactflow/dist/style.css'; // Import React Flow styles
 import ContextMenu from './ContextMenu'; // Import the ContextMenu component
+import ImageNode from './ImageNode'; // Import the custom image node
 import Sidebar from './Sidebar'; // Import the Sidebar component
 
 const App = () => {
@@ -20,6 +21,9 @@ const App = () => {
   // REMOVED: const [allDriveItems, setAllDriveItems] = useState([]);
   const [isInitialLoadComplete, setIsInitialLoadComplete] = useState(false); // Track initial load
   const [sidebarUpdateCounter, setSidebarUpdateCounter] = useState(0); // Counter to trigger sidebar refresh
+  // REMOVED: const [backgroundImageUrl, setBackgroundImageUrl] = useState(null); // State for background image URL
+
+  const nodeTypes = useMemo(() => ({ imageNode: ImageNode }), []); // Define custom node types
 
 
   // Add edge connection logic (optional for now)
@@ -33,13 +37,22 @@ const App = () => {
     if (window.self !== window.top) { // Only send if in iframe
       console.log('Sending SAVE_FLOW_DATA to parent window...');
       // Create a cleaned version of nodes for saving, including mimeType
-      const nodesToSave = currentNodes.map(node => ({ // Use currentNodes
-        id: node.id,
-        // Include both label and mimeType in saved data
-        data: { label: node.data.label, mimeType: node.data.mimeType },
-        position: node.position, // Save the current position
-        // Exclude width, height, selected, positionAbsolute, dragging etc.
-      }));
+      const nodesToSave = currentNodes.map(node => {
+        // If it's the background image node, exclude the imageUrl from its data
+        if (node.id === 'background-image-node') {
+          const { imageUrl, ...restData } = node.data || {}; // Destructure to remove imageUrl
+          // Return essential node properties + data without imageUrl
+          return { id: node.id, type: node.type, position: node.position, data: restData, style: node.style, draggable: node.draggable, selectable: node.selectable };
+        }
+        // For other nodes, include necessary data
+        return {
+          id: node.id,
+          data: { label: node.data?.label, mimeType: node.data?.mimeType }, // Add optional chaining
+          position: node.position, // Save the current position
+          // Add other relevant properties if needed, e.g., type
+          type: node.type
+        };
+      });
       const flowData = { nodes: nodesToSave, edges: currentEdges }; // Use potentially passed edges
       console.log('Cleaned flow data for saving:', flowData);
       window.parent.postMessage({ type: 'SAVE_FLOW_DATA', payload: flowData }, '*'); // Use specific origin in production
@@ -210,11 +223,14 @@ const App = () => {
       if (event.data && event.data.type === 'BACKGROUND_RESPONSE') {
         const action = event.data.payload?.requestAction;
         const responsePayload = event.data.payload?.response; // This holds the original payload {savedData, driveFiles} or {files}
+        // Note: For FOLDER_DATA_LOADED, responsePayload = {savedData: {...}, driveFiles: [...], backgroundImageDataUrl: '...'}
         const error = event.data.payload?.error;
+
+        // Now check the nested action
 
         if (action === 'FOLDER_DATA_LOADED' && responsePayload) {
           console.log('Received FOLDER_DATA_LOADED via BACKGROUND_RESPONSE. Payload:', responsePayload);
-          const { savedData, driveFiles } = responsePayload; // Destructure from responsePayload
+          const { savedData, driveFiles, backgroundImageDataUrl } = responsePayload; // Destructure, add backgroundImageDataUrl
 
         // Check if savedData exists and has nodes
         if (savedData && savedData.nodes && savedData.nodes.length > 0) {
@@ -235,9 +251,16 @@ const App = () => {
           setNodes([]);
           setEdges([]);
         }
+        // Background image node data is now handled within setNodes/setEdges
+        // console.log('Setting background image URL state:', backgroundImageDataUrl); // Removed state setter
+        // setBackgroundImageUrl(backgroundImageDataUrl); // Removed state setter
+
         setIsInitialLoadComplete(true); // Mark load complete after processing data
 
-        } else if (action === 'DRIVE_FILES_ERROR' && error) { // Check action and error field
+        } else if (action === 'LIST_DRIVE_FILES_RESPONSE' && error) { // Check for error from listDriveFiles
+          console.error('Error listing sidebar files:', error);
+          // Handle sidebar specific error if needed, maybe show in sidebar component?
+        } else if (action === 'DRIVE_FILES_ERROR' && error) { // Check action and error field from FOLDER_DATA_LOADED
           console.error('Error loading folder data:', error);
         // REMOVED: setAllDriveItems([]); // Clear items on error
         setNodes([]);         // Clear nodes
@@ -249,7 +272,7 @@ const App = () => {
           // Increment the counter to trigger sidebar refresh
           setSidebarUpdateCounter(count => count + 1);
         }
-      }
+      } // End of check for BACKGROUND_RESPONSE type
       };
     window.addEventListener('message', messageListener);
       // REMOVED: Request files on mount - Now waits for content script to send data
@@ -294,7 +317,7 @@ const App = () => {
       <ReactFlowProvider> {/* Wrap with provider for useReactFlow hook */}
         {/* Pass the update counter to Sidebar */}
         <Sidebar onDragStart={onDragStart} updateCounter={sidebarUpdateCounter} /> {/* Add Sidebar */}
-        <div className="react-flow-wrapper" ref={reactFlowWrapper} style={{ height: '100%', width: '100%' }}> {/* Wrapper for drop */}
+        <div className="react-flow-wrapper" ref={reactFlowWrapper} style={{ height: '100%', width: '100%' }}> {/* Wrapper for drop - REMOVED background style */}
           <ReactFlow
             nodes={nodes}
             edges={edges}
@@ -304,6 +327,7 @@ const App = () => {
             onConnect={onConnect}
             onInit={setReactFlowInstance} // Capture instance on init
             onDrop={onDrop} // Add drop handler
+            nodeTypes={nodeTypes} // Pass custom node types
             onDragOver={onDragOver} // Add drag over handler
             fitView
             onNodeDragStop={onNodeDragStop}
