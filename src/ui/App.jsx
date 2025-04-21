@@ -26,22 +26,25 @@ const App = () => {
   const onConnect = useCallback((params) => setEdges((eds) => addEdge(params, eds)), [setEdges]);
 
   // Callback function to send data to the parent window (content script)
-  const saveData = useCallback(() => {
+  // Modified to accept optional nodes/edges arguments for immediate saving after state calculation
+  const saveData = useCallback((nodesToSaveArg, edgesToSaveArg) => {
+    const currentNodes = nodesToSaveArg || nodes; // Use arg if provided, else state
+    const currentEdges = edgesToSaveArg || edges; // Use arg if provided, else state
     if (window.self !== window.top) { // Only send if in iframe
       console.log('Sending SAVE_FLOW_DATA to parent window...');
       // Create a cleaned version of nodes for saving, including mimeType
-      const nodesToSave = nodes.map(node => ({
+      const nodesToSave = currentNodes.map(node => ({ // Use currentNodes
         id: node.id,
         // Include both label and mimeType in saved data
         data: { label: node.data.label, mimeType: node.data.mimeType },
         position: node.position, // Save the current position
         // Exclude width, height, selected, positionAbsolute, dragging etc.
       }));
-      const flowData = { nodes: nodesToSave, edges }; // Use cleaned nodes
+      const flowData = { nodes: nodesToSave, edges: currentEdges }; // Use potentially passed edges
       console.log('Cleaned flow data for saving:', flowData);
       window.parent.postMessage({ type: 'SAVE_FLOW_DATA', payload: flowData }, '*'); // Use specific origin in production
     }
-  }, [nodes, edges]); // Depend on nodes and edges state
+  }, [nodes, edges]); // Keep dependencies on state for fallback/other triggers
 
   // Handler for when a node drag stops
   const onNodeDragStop = useCallback((event, node) => {
@@ -148,35 +151,38 @@ const App = () => {
       console.log('Creating new node:', newNode);
 
       // Add the new node and save
-      setNodes((nds) => nds.concat(newNode));
-      // Note: saveData will be called implicitly because `nodes` state changes,
-      // triggering the useEffect that calls saveData. If immediate save is needed,
-      // call saveData() here, but ensure it uses the *updated* nodes state.
-      // For simplicity, relying on the existing save mechanism for now.
-      // Consider adding newNode directly to the nodes list passed to saveData if needed.
-      // REMOVED explicit saveData() call - rely on useEffect
+      setNodes((nds) => {
+        const nextNodes = nds.concat(newNode);
+        saveData(nextNodes, edges); // Pass calculated next state to saveData
+        return nextNodes;
+      });
 
     },
-    [reactFlowInstance, setNodes], // Removed saveData dependency
+    [reactFlowInstance, setNodes, edges, saveData], // Add edges and saveData dependencies
   );
 
   // --- Node Removal Handler ---
   const handleRemoveNode = useCallback((nodeIdToRemove) => {
-    setNodes((nds) => nds.filter(node => node.id !== nodeIdToRemove));
-    // REMOVED explicit saveData() call - rely on useEffect
+    setNodes((nds) => {
+        const nextNodes = nds.filter(node => node.id !== nodeIdToRemove);
+        saveData(nextNodes, edges); // Pass calculated next state to saveData
+        return nextNodes;
+    });
     console.log('Removed node:', nodeIdToRemove);
-  }, [setNodes]); // Removed saveData dependency
+  }, [setNodes, edges, saveData]); // Add edges and saveData dependencies
   // --- End Node Removal Handler ---
 
-  // Effect to save data whenever nodes or edges change *after* initial load
-  useEffect(() => {
-    // Only save after the initial data load process is complete
-    if (isInitialLoadComplete) {
-      // console.log('Save effect triggered. Nodes state before saving:', nodes); // DEBUG REMOVED
-      saveData();
-    }
-  }, [nodes, edges, saveData, isInitialLoadComplete]); // Watch nodes, edges, and load flag
+  // REMOVED: Effect to save data whenever nodes or edges change *after* initial load
+  // This was causing a loop: load -> setNodes -> save -> load -> ...
 
+
+  // Effect to log state changes after load
+  useEffect(() => {
+    if (isInitialLoadComplete) {
+      console.log('App State Updated - Nodes:', nodes);
+      console.log('App State Updated - Edges:', edges);
+    }
+  }, [nodes, edges, isInitialLoadComplete]); // Log when nodes, edges, or load flag change
 
   // --- Effect for setting up message listener and mock data ---
   useEffect(() => {
@@ -197,16 +203,27 @@ const App = () => {
       // Basic origin check (adjust if needed for production)
       // if (event.origin !== /* expected origin */) return;
 
-      if (event.data && event.data.type === 'FOLDER_DATA_LOADED') {
-        console.log('Received FOLDER_DATA_LOADED message. Payload:', event.data.payload);
-        const { savedData, driveFiles } = event.data.payload;
+      // Log the raw event data received by App.jsx listener
+      console.log('App.jsx messageListener received:', JSON.stringify(event.data));
+
+      // Check for the generic wrapper type first
+      if (event.data && event.data.type === 'BACKGROUND_RESPONSE') {
+        const action = event.data.payload?.requestAction;
+        const responsePayload = event.data.payload?.response; // This holds the original payload {savedData, driveFiles} or {files}
+        const error = event.data.payload?.error;
+
+        if (action === 'FOLDER_DATA_LOADED' && responsePayload) {
+          console.log('Received FOLDER_DATA_LOADED via BACKGROUND_RESPONSE. Payload:', responsePayload);
+          const { savedData, driveFiles } = responsePayload; // Destructure from responsePayload
 
         // Check if savedData exists and has nodes
         if (savedData && savedData.nodes && savedData.nodes.length > 0) {
           // Saved data exists: Load nodes, edges, and all drive items for sidebar filtering
           console.log('Saved data found, loading nodes and drive items.');
+          // Log the data structure before setting state
+          console.log('Applying saved nodes:', JSON.stringify(savedData.nodes));
+          console.log('Applying saved edges:', JSON.stringify(savedData.edges || []));
           // REMOVED: setAllDriveItems(driveFiles || []); // Sidebar fetches its own data now
-        // console.log('Set allDriveItems. Count:', (driveFiles || []).length); // DEBUG REMOVED
           // Pass saved nodes directly, assuming structure is correct
           // console.log('Attempting to set nodes directly from saved data:', savedData.nodes); // DEBUG REMOVED
           setNodes(savedData.nodes);
@@ -220,18 +237,19 @@ const App = () => {
         }
         setIsInitialLoadComplete(true); // Mark load complete after processing data
 
-      } else if (event.data && event.data.type === 'DRIVE_FILES_ERROR') { // Keep error handling separate
-        console.error('Error loading folder data:', event.data.payload);
+        } else if (action === 'DRIVE_FILES_ERROR' && error) { // Check action and error field
+          console.error('Error loading folder data:', error);
         // REMOVED: setAllDriveItems([]); // Clear items on error
         setNodes([]);         // Clear nodes
         setEdges([]);         // Clear edges
         setIsInitialLoadComplete(true); // Mark load complete even on error
         // Optionally display an error message in the UI?
-        } else if (event.data && event.data.type === 'driveFilesUpdated') {
+        } else if (action === 'driveFilesUpdated') { // Check action
           console.log('App.jsx received driveFilesUpdated notification.');
           // Increment the counter to trigger sidebar refresh
           setSidebarUpdateCounter(count => count + 1);
         }
+      }
       };
     window.addEventListener('message', messageListener);
       // REMOVED: Request files on mount - Now waits for content script to send data
